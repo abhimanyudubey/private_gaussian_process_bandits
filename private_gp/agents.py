@@ -1,31 +1,17 @@
-from qff.embedding import HermiteEmbedding
 import numpy as np
 from functools import partial
 import random
 
+from .helpers import sqexp_p_vectors
+from .qff.embedding import HermiteEmbedding
 
-def normalize(v, p=2):
-    ''' project vector on to unit L-p ball. '''
-    norm=np.linalg.norm(v, ord=p)
-    if norm==0:
-        norm=np.finfo(v.dtype).eps
-    return v/norm
-
-
-def sqexp_p_vectors(x, y, p=2, scale=1.0):
-    ''' compute rbf kernel between two vectors x and y '''
-    
-    d = np.sum(np.power(np.abs(x - y), p), axis=1)
-    d = np.expand_dims(np.exp(-d), axis=1)
-
-    return d
 
 
 INFINITE_KERNELS = ['rbf']
 
 
 class BO:
-    ''' Wrapper over various kernel bayesian optimization matrices.'''
+    ''' Wrapper over various kernel bayesian optimization methods.'''
     
     def __init__(self, kernel='rbf', m=0, lam=1.0):
         
@@ -40,17 +26,28 @@ class BO:
         if m == 0:
             self.k_func = partial(sqexp_p_vectors, p=2, scale=1.0)
             self.inf_kernel = True
-            self.K_t = None
-            self.X_t = None
         
         else:
             self.m = m
             self.feat_func = lambda x: x
             self.inf_kernel = False
             self.rho = 1.0
+        
+        self.reset()
 
-            self.S_t = self.lam * np.eye(m)
-            self.u_t = np.zeros((1, m))
+    
+    def reset(self):
+        ''' Reset the BO parameters '''
+        self.t = 0
+        if self.inf_kernel:
+            self.K_t = None
+            self.X_t = None
+        
+        else:
+            self.S_t = self.lam * np.eye(self.m)
+            self.u_t = np.zeros((1, self.m))
+            self.X_t = None
+    
     
     def _update_inf_dim(self, x_t, y_t):
         # rank 1 update of kernel matrices
@@ -87,13 +84,14 @@ class BO:
         self.t += 1
 
         phi_t = self.feat_func(x_t)
+        y_t = np.expand_dims(y_t, 0)
 
         if self.X_t is None:
             self.X_t = phi_t
-            self.y_t = np.expand_dims(y_t, 0)
+            self.y_t = y_t
         else:
-            self.X_t = np.concatenate((self.X_t, x_t), axis=1)
-            self.y_t = np.concatenate((self.y_t, y_t), axis=1)
+            self.X_t = np.concatenate((self.X_t, x_t), axis=0)
+            self.y_t = np.concatenate((self.y_t, y_t), axis=0)
         
         self.S_t += np.matmul(phi_t, phi_t.T)
         self.u_t += y_t * phi_t
@@ -127,118 +125,20 @@ class BO:
         
         mus, sigmas = [], []
         if not self.inf_kernel:
-            mu, S_inv = self._params_fin()
+            u, S_inv = self._params_fin()
 
         for x in D_t:
             if self.inf_kernel:
                 mu, sigma = self._params_inf(x)
             else:
                 phi = self.feat_func(x)
-                sigma = np.matmul(phi.T, np.matmul(S_inv, phi))
+                mu = np.dot(phi, u)
+                sigma = np.matmul(phi, np.matmul(S_inv, phi.T))
             
             mus.append(mu)
             sigmas.append(sigma)
 
         return mus, sigmas
-
-
-class Env:
-
-    def __init__(self, n=5, d=5, B=1.0, kernel='rbf', noise='normal'):
-        
-        self.n = n
-        self.d = d
-        self.B = B
-
-        # initialize kernel parameters
-        self.kernel = kernel
-        self.init_kernel()
-
-        # initialize noise parameters
-        self.noise = noise
-        self.init_noise()
-
-        self.actions = []
-
-        # initialize monitor
-        self.regrets = []
-
-    
-    def init_kernel(self):
-        ''' initialize the index set for kernel'''
-
-        self.n_index_set = 4
-        if self.kernel == 'linear':
-            self.n_index_set = 1
-
-        _alpha = np.random.random_sample((self.n_index_set, ))
-        self.alpha = normalize(_alpha, p=1)
-
-        _x = np.random.random_sample((self.n_index_set, self.d))
-        _norms = np.linalg.norm(_x, ord=2, axis = 1, keepdims = True)
-        self.index_set = _x * self.B / _norms
-
-        if self.kernel == 'rbf':
-            self.rbf_scale = 1.0
-
-    def init_noise(self):
-
-        if self.noise == 'normal':
-            self.rho = 1.0
-    
-    def f(self, x):
-        ''' get dot product with f'''
-        _x_mat = np.tile(x, [self.n_index_set, 1])
-
-        if self.kernel == 'rbf':
-            # squared-exponential kernel
-            return np.dot(self.alpha, sqexp_p_vectors(self.index_set, _x_mat, p=2, scale=self.rbf_scale))
-        
-        if self.kernel == 'exp_dist':
-            # exponential distance kernel
-            _d = np.sqrt(2 - np.einsum('ij,ij->i', self.index_set, _x_mat)) / self.rbf_scale
-            _k = np.exp(_d)
-            
-            return np.dot(self.alpha, _k)
-        
-        if self.kernel == 'linear':
-            # linear kernel
-            return np.dot(self.alpha, np.einsum('ij,ij->i', self.index_set, _x_mat))
-        
-        return 0
-
-    def get_action_set(self):
-
-        actions = []
-
-        for _ in range(self.n):
-            # randomly sample d-dimensional vector
-            x_i = np.random.random_sample((1, self.d))
-            # normalize to l2 ball
-            x_i = normalize(x_i, p=2)
-            actions.append(x_i)
-        
-
-        # calculate best action and store latest r*
-        round_rewards = [self.f(x) for x in actions]
-        self.opt_x = np.argmax(round_rewards)
-        self.opt_r = round_rewards[self.opt_x]
-        self.actions = actions
-
-        return actions
-    
-    def sample_noise(self):
-
-        if self.noise == 'normal':
-            return np.random.normal(scale=self.rho)
-    
-    def play(self, x_t):
-        f_x = self.f(x_t)
-
-        y_t = f_x + self.sample_noise()
-        r_t = self.opt_r - f_x
-
-        return y_t, r_t
 
 
 class Agent:
@@ -248,16 +148,21 @@ class Agent:
         self.t = 0
         pass
 
-    def select_action(self, *args):
+    def select_action(self, *args, **kwargs):
         self.t += 1
     
+    def update(self, *args, **kwargs):
+        pass
+
+    def reset(self):
+        pass
 
 class Random(Agent):
 
     def __init__(self):
         super(Random, self).__init__()
     
-    def select_action(self, D_t):
+    def select_action(self, D_t, *args, **kwargs):
         # randomly select action
         super(Random, self).select_action()
         return random.choice(D_t)
@@ -266,17 +171,30 @@ class Random(Agent):
 class GP_UCB(Agent):
     ''' Implements regular GP-UCB with the original kernel. '''
 
-    def __init__(self, lam=1.0, m=0, kernel_type='rbf'):
+    def __init__(self, lam=1.0, m=0, B=1.0, kernel='rbf'):
         
         super(GP_UCB, self).__init__()
-        self.bo = BO(kernel_type, m, lam)
+        self.kernel = kernel
+        self.bo = BO(kernel, m, lam)
         self.delta = 0.01
+        self.B = B
     
     def update(self, x_t, y_t):
         self.bo.update(x_t, y_t)
     
+    def reset(self):
+        self.bo.reset()
+    
     def get_beta(self, D_t):
-        return np.sqrt(2 * np.log(len(D_t) * (self.bo.t ** 2) * (np.pi ** 2) / (6 * self.delta)))
+
+        if self.kernel in INFINITE_KERNELS:
+            return np.sqrt(2 * np.log(len(D_t) 
+                * (self.bo.t ** 2) * (np.pi ** 2) / (6 * self.delta)))
+        else:
+            # finite dimensional kernel, use Abbasi-Yadkori
+            return self.bo.rho * \
+                np.sqrt(self.bo.m * np.log(1 + self.bo.t * (self.B**2) / self.bo.lam) 
+                - np.log(self.delta)) + self.bo.lam ** (0.5) * self.B
     
     def select_action(self, D_t, beta_mult):
         
