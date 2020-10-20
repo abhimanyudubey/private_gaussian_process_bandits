@@ -99,3 +99,8 @@ class Env:
         r_t = self.opt_r - f_x
 
         return y_t, r_t
+
+class GridEnv(Env):
+
+    def get_action_set(self):
+        pass

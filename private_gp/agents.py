@@ -1,10 +1,10 @@
 import numpy as np
 from functools import partial
 import random
+import torch
 
 from .helpers import sqexp_p_vectors
 from .qff.embedding import HermiteEmbedding
-
 
 
 INFINITE_KERNELS = ['rbf']
@@ -32,10 +32,15 @@ class BO:
             self.feat_func = lambda x: x
             self.inf_kernel = False
             self.rho = 1.0
+
+            self.use_qff = False
         
         self.reset()
 
-    
+    def set_feat_func(self, func):
+        if not self.inf_kernel:
+            self.feat_func = func
+
     def reset(self):
         ''' Reset the BO parameters '''
         self.t = 0
@@ -83,14 +88,21 @@ class BO:
         # regular finite-dimensional update
         self.t += 1
 
-        phi_t = self.feat_func(x_t)
+        if self.use_qff:
+            # qff uses torch for some inexplicable reason
+            phi_t = torch.from_numpy(x_t)
+            phi_t = self.qff.embed(phi_t)
+            phi_t = phi_t.numpy()
+        else:
+            phi_t = self.feat_func(x_t)
+
         y_t = np.expand_dims(y_t, 0)
 
         if self.X_t is None:
             self.X_t = phi_t
             self.y_t = y_t
         else:
-            self.X_t = np.concatenate((self.X_t, x_t), axis=0)
+            self.X_t = np.concatenate((self.X_t, phi_t), axis=0)
             self.y_t = np.concatenate((self.y_t, y_t), axis=0)
         
         self.S_t += np.matmul(phi_t, phi_t.T)
@@ -131,15 +143,26 @@ class BO:
             if self.inf_kernel:
                 mu, sigma = self._params_inf(x)
             else:
-                phi = self.feat_func(x)
-                mu = np.dot(phi, u)
-                sigma = np.matmul(phi, np.matmul(S_inv, phi.T))
+                if self.use_qff:
+                    # qff uses torch for some inexplicable reason
+                    phi_t = torch.from_numpy(x)
+                    phi_t = self.qff.embed(phi_t)
+                    phi_t = phi_t.numpy()
+                else:
+                    phi_t = self.feat_func(x)
+                mu = np.dot(phi_t, u)
+                sigma = np.matmul(phi_t, np.matmul(S_inv, phi_t.T))
             
             mus.append(mu)
             sigmas.append(sigma)
 
         return mus, sigmas
-
+    
+    def get_noisy_posterior(self, D_t, H_t, h_t):
+        
+        if self.inf_kernel:
+            return self.get_posterior(D_t)
+        
 
 class Agent:
 
@@ -156,6 +179,7 @@ class Agent:
 
     def reset(self):
         pass
+
 
 class Random(Agent):
 
@@ -210,3 +234,17 @@ class GP_UCB(Agent):
                 best_x, max_ucb = x, ucb_x
 
         return best_x
+
+
+class QFF_GP_UCB(GP_UCB):
+    ''' Implements regular QFF-GP-UCB with Hermite approximations. '''
+
+    def __init__(self, lam=1.0, m=0, B=1.0, d=5, kernel='rbf'):
+        qff = HermiteEmbedding(gamma=1, m=m, d=d, groups=None, approx = "hermite")
+        # figure out dimensionality first
+        _x = torch.from_numpy(np.ones((1, d)))
+        m_act = qff.embed(_x).numpy().shape[1]
+
+        super(QFF_GP_UCB, self).__init__(lam, m=m_act, B=B, kernel='linear')
+        self.bo.use_qff = True
+        self.bo.qff = qff

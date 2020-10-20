@@ -93,3 +93,4 @@ class Experiment:
                 linewidth=0)
         
         plt.legend(loc='upper left')
+        plt.title(self.exp_name)
