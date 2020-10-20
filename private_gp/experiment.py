@@ -1,6 +1,9 @@
 import private_gp as gp
-import matplotlib.pyplot as plt
 import numpy as np
+
+import matplotlib
+from .helpers import matplotlib_init
+import matplotlib.pyplot as plt
 
 
 class Experiment:
@@ -73,14 +76,15 @@ class Experiment:
         
     def plot_figure(self):
         ''' Plot figure in matplotlib '''
+        matplotlib_init()
         
         if not hasattr(self, 'means'):
             print('Please run experiment first')
             return 1
         
-        for i, alg in enumerate(self.algs):
+        for i, alg_name in enumerate(self.alg_names):
             
-            plt.plot(range(self.T), self.means[i], label=self.alg_names[i])
+            plt.plot(range(self.T), self.means[i], label=alg_name)
             
             conf_min = self.means[i] - 0.5 * self.sigmas[i]
             conf_max = self.means[i] + 0.5 * self.sigmas[i]
