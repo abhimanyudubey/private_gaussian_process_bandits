@@ -40,7 +40,10 @@ class Experiment:
             
             print('Running round %d of %d' % (kk+1, self.k))
             
-            for _ in range(self.T):
+            for t in range(self.T):
+
+                if t % 1000 == 0:
+                    print('Iteration %d of %d' % (t+1, self.T))
             
                 D_t = self.env.get_action_set()
 
